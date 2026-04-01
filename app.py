@@ -122,8 +122,7 @@ def buy(message):
 # ===== УТИЛИТА =====
 def message_step(message, step):
     return message.chat.id in user_state and user_state[message.chat.id]["step"] == step
-
-bot.polling() 
+    
 
 
 
