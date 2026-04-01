@@ -19,7 +19,7 @@ BASE_URL      = os.environ.get("BASE_URL")          # https://your-app.up.railwa
 # ============================================================
 #  ИНИЦИАЛИЗАЦИЯ
 # ============================================================
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================================
