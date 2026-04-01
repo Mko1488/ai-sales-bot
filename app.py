@@ -9,10 +9,11 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# ===== ХРАНЕНИЕ =====
 products = {}
 user_state = {}
 
-# ===== СТАРТ === ==
+# ===== СТАРТ =====
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(message.chat.id, "🔥 Напиши 'каталог' чтобы посмотреть товары")
@@ -37,47 +38,55 @@ def admin_panel(message):
         return
 
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("➕ Добавить товар", "❌ Удалить товар", "📊 Список товаров")
+    markup.add("➕ Добавить товар")
+    markup.add("❌ Удалить товар")
+    markup.add("📊 Список товаров")
 
     bot.send_message(message.chat.id, "⚙️ Админ панель", reply_markup=markup)
 
-# ===== ДОБАВИТЬ =====
+# ===== ДОБАВЛЕНИЕ =====
 @bot.message_handler(func=lambda m: m.text == "➕ Добавить товар")
 def add_product(message):
     user_state[message.chat.id] = {"step": "name"}
-    bot.send_message(message.chat.id, "Название товара:")
+    bot.send_message(message.chat.id, "Введи название товара:")
 
 @bot.message_handler(func=lambda m: step(m, "name"))
 def get_name(message):
     user_state[message.chat.id]["name"] = message.text
     user_state[message.chat.id]["step"] = "price"
-    bot.send_message(message.chat.id, "Цена:")
+    bot.send_message(message.chat.id, "Введи цену:")
 
 @bot.message_handler(func=lambda m: step(m, "price"))
 def get_price(message):
-    user_state[message.chat.id]["price"] = int(message.text)
-    user_state[message.chat.id]["step"] = "stock"
-    bot.send_message(message.chat.id, "Количество:")
+    try:
+        user_state[message.chat.id]["price"] = int(message.text)
+        user_state[message.chat.id]["step"] = "stock"
+        bot.send_message(message.chat.id, "Введи количество:")
+    except:
+        bot.send_message(message.chat.id, "❗ Введи число")
 
 @bot.message_handler(func=lambda m: step(m, "stock"))
 def get_stock(message):
-    data = user_state[message.chat.id]
-    key = data["name"].lower()
+    try:
+        data = user_state[message.chat.id]
+        key = data["name"].lower()
 
-    products[key] = {
-        "name": data["name"],
-        "price": data["price"],
-        "stock": int(message.text)
-    }
+        products[key] = {
+            "name": data["name"],
+            "price": data["price"],
+            "stock": int(message.text)
+        }
 
-    user_state.pop(message.chat.id)
-    bot.send_message(message.chat.id, "✅ Товар добавлен")
+        user_state.pop(message.chat.id)
+        bot.send_message(message.chat.id, "✅ Товар добавлен")
+    except:
+        bot.send_message(message.chat.id, "❗ Введи число")
 
-# ===== УДАЛИТЬ =====
+# ===== УДАЛЕНИЕ =====
 @bot.message_handler(func=lambda m: m.text == "❌ Удалить товар")
 def delete_product(message):
     user_state[message.chat.id] = {"step": "delete"}
-    bot.send_message(message.chat.id, "Название товара:")
+    bot.send_message(message.chat.id, "Напиши название товара:")
 
 @bot.message_handler(func=lambda m: step(m, "delete"))
 def confirm_delete(message):
@@ -104,8 +113,8 @@ def list_products(message):
 
     bot.send_message(message.chat.id, text)
 
-# ===== ПОКУПКА =====
-@bot.message_handler(func=lambda m: True)
+# ===== ПОКУПКА (фикс!) =====
+@bot.message_handler(func=lambda m: m.text and m.text.lower() not in ["каталог", "➕ добавить товар", "❌ удалить товар", "📊 список товаров"])
 def buy(message):
     text = message.text.lower()
 
@@ -119,7 +128,7 @@ def buy(message):
                 bot.send_message(message.chat.id, "❌ Нет в наличии")
                 return
 
-# ===== UTILS =====
+# ===== УТИЛИТА =====
 def step(message, s):
     return message.chat.id in user_state and user_state[message.chat.id]["step"] == s
 
