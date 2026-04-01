@@ -122,7 +122,26 @@ def buy(message):
 # ===== УТИЛИТА =====
 def message_step(message, step):
     return message.chat.id in user_state and user_state[message.chat.id]["step"] == step
-    
+    from flask import Flask, request
+import os
+
+app = Flask(__name__)
+
+@app.route('/admin', methods=['POST'])
+def webhook():
+    json_str = request.get_data().decode('UTF-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return 'ok', 200
+@app.route('/')
+def index():
+    return 'Bot is running'
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    bot.remove_webhook()
+    bot.set_webhook(url=os.environ.get("BASE_URL") + "/admin")
+    app.run(host="0.0.0.0", port=port)
 
 
 
