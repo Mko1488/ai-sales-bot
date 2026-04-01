@@ -28,7 +28,7 @@ def catalog(message):
 
     bot.send_message(message.chat.id, text)
 
-# ===== АДМИН ПАНЕЛЬ =====
+# ===== АДМИН ПАНЕЛЬ = = = = =
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.chat.id != ADMIN_ID:
@@ -123,4 +123,7 @@ def buy(message):
 def message_step(message, step):
     return message.chat.id in user_state and user_state[message.chat.id]["step"] == step
 
-bot.polling()
+bot.polling() 
+
+
+
