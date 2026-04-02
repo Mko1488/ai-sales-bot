@@ -3,14 +3,28 @@ from telebot import types
 from flask import Flask, request
 import os, json, time, requests, re, threading
 
-# ================= CONFIG =================
-TOKEN = os.environ.get("ADMIN_BOT_TOKEN")
-SUPER_ADMIN = int(os.environ.get("ADMIN_ID" "0"))
-YANDEX_KEY = os.environ.get("YANDEX_API_KEY")
-YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID")
-BASE_URL = os.environ.get("BASE_URL")
+# ================= SAFE ENV =================
+def get_env(name, default=None, required=False):
+    val = os.environ.get(name, default)
+    if required and not val:
+        print(f"❌ ENV MISSING: {name}")
+    else:
+        print(f"✅ ENV {name}: OK")
+    return val
 
-bot = telebot.TeleBot(TOKEN)
+BOT_TOKEN = get_env("ADMIN_BOT_TOKEN", required=True)
+ADMIN_ID_RAW = get_env("ADMIN_ID", required=True)
+YANDEX_KEY = get_env("YANDEX_API_KEY", required=True)
+YANDEX_FOLDER = get_env("YANDEX_FOLDER_ID", required=True)
+BASE_URL = get_env("BASE_URL", required=True)
+
+try:
+    SUPER_ADMIN = int(ADMIN_ID_RAW)
+except:
+    print("❌ ADMIN_ID НЕ ЧИСЛО")
+    SUPER_ADMIN = 0
+
+bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ================= DATABASE =================
@@ -82,7 +96,7 @@ def ask_ai(client, uid, text):
 КАТАЛОГ:
 {catalog}
 
-Отвечай кратко, уверенно и продавай.
+Отвечай кратко и продавай.
 
 [STATUS:HOT/WARM/COLD]
 """
@@ -167,8 +181,8 @@ def start_follow(client, uid):
     def worker():
         steps = [
             (120, "Есть вопросы? Помогу 👍"),
-            (300, "Могу предложить лучший вариант 🔥"),
-            (600, "Есть выгодное предложение")
+            (300, "Есть лучший вариант 🔥"),
+            (600, "Последнее предложение")
         ]
         for delay, text in steps:
             if ev.wait(delay):
@@ -209,120 +223,7 @@ def start(msg):
     if msg.chat.id == client["owner_id"]:
         bot.send_message(msg.chat.id, "Панель", reply_markup=owner_kb())
     else:
-        bot.send_message(msg.chat.id, "Напиши, что ищешь 👇", reply_markup=client_kb())
-
-# ================= CREATE CLIENT =================
-@bot.message_handler(commands=["create_client"])
-def create(msg):
-    if msg.chat.id != SUPER_ADMIN:
-        return
-    cid = create_client(msg.chat.id)
-    bot.send_message(msg.chat.id, f"Клиент создан: {cid}")
-
-# ================= SUB =================
-@bot.message_handler(commands=["activate"])
-def activate(msg):
-    cid, client = get_client(msg.chat.id)
-
-    if not client:
-        cid = create_client(msg.chat.id)
-        client = clients[cid]
-
-    client["subscription_until"] = time.time() + 30*86400
-    save()
-
-    bot.send_message(msg.chat.id, "Подписка активна")
-
-# ================= PRODUCTS =================
-@bot.message_handler(func=lambda m: m.text == "Добавить товар")
-def add(msg):
-    cid, client = get_client(msg.chat.id)
-    if not client or msg.chat.id != client["owner_id"]:
-        return
-
-    user_state[msg.chat.id] = {"step": "name"}
-    bot.send_message(msg.chat.id, "Название?")
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,{}).get("step")=="name")
-def add_name(msg):
-    user_state[msg.chat.id]["name"] = msg.text
-    user_state[msg.chat.id]["step"] = "price"
-    bot.send_message(msg.chat.id, "Цена?")
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,{}).get("step")=="price")
-def add_price(msg):
-    user_state[msg.chat.id]["price"] = float(msg.text)
-    user_state[msg.chat.id]["step"] = "stock"
-    bot.send_message(msg.chat.id, "Количество?")
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,{}).get("step")=="stock")
-def add_stock(msg):
-    cid, client = get_client(msg.chat.id)
-    d = user_state[msg.chat.id]
-
-    client["products"][d["name"].lower()] = {
-        "name": d["name"],
-        "price": d["price"],
-        "stock": int(msg.text)
-    }
-
-    user_state.pop(msg.chat.id)
-    save()
-
-    bot.send_message(msg.chat.id, "Товар добавлен", reply_markup=owner_kb())
-
-# ================= DELETE =================
-@bot.message_handler(func=lambda m: m.text == "Удалить товар")
-def delete(msg):
-    cid, client = get_client(msg.chat.id)
-    if not client or msg.chat.id != client["owner_id"]:
-        return
-
-    text = "\n".join([p["name"] for p in client["products"].values()])
-    user_state[msg.chat.id] = {"step": "del"}
-    bot.send_message(msg.chat.id, f"Товары:\n{text}\n\nЧто удалить?")
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,{}).get("step")=="del")
-def delete_do(msg):
-    cid, client = get_client(msg.chat.id)
-    key = msg.text.lower()
-
-    if key in client["products"]:
-        client["products"].pop(key)
-        save()
-        bot.send_message(msg.chat.id, "Удалено", reply_markup=owner_kb())
-
-# ================= LEADS =================
-@bot.message_handler(func=lambda m: m.text == "Лиды")
-def leads(msg):
-    cid, client = get_client(msg.chat.id)
-    if not client or msg.chat.id != client["owner_id"]:
-        return
-
-    text = ""
-    for uid, d in client["crm"].items():
-        text += f"{uid} — {d['status']}\n"
-
-    bot.send_message(msg.chat.id, text or "Нет лидов")
-
-# ================= BROADCAST =================
-@bot.message_handler(func=lambda m: m.text == "Рассылка")
-def bc(msg):
-    user_state[msg.chat.id] = {"step": "bc"}
-    bot.send_message(msg.chat.id, "Текст рассылки?")
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,{}).get("step")=="bc")
-def bc_send(msg):
-    cid, client = get_client(msg.chat.id)
-
-    for uid in client["crm"]:
-        try:
-            bot.send_message(int(uid), msg.text)
-        except:
-            pass
-
-    user_state.pop(msg.chat.id)
-    bot.send_message(msg.chat.id, "Готово", reply_markup=owner_kb())
+        bot.send_message(msg.chat.id, "Напиши что ищешь 👇", reply_markup=client_kb())
 
 # ================= AI =================
 @bot.message_handler(func=lambda m: m.text and m.text not in BUTTONS)
