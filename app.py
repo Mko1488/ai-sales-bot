@@ -5,7 +5,7 @@ import os, json, time, requests, re, threading
 
 # ================= CONFIG =================
 TOKEN = os.environ.get("ADMIN_BOT_TOKEN")
-SUPER_ADMIN = int(os.environ.get("ADMIN_ID"))
+SUPER_ADMIN = int(os.environ.get("ADMIN_ID" "0"))
 YANDEX_KEY = os.environ.get("YANDEX_API_KEY")
 YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID")
 BASE_URL = os.environ.get("BASE_URL")
