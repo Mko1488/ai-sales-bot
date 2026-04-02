@@ -43,7 +43,7 @@ def save():
 db = load()
 clients = db["clients"]
 
-# ================= GLOBAL =================
+# ==========  ======= GLOBAL =====  v============
 user_state = {}
 follow_events = {}
 last_notify = {}
