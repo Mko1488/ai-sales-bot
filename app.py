@@ -3,32 +3,32 @@ from telebot import types
 from flask import Flask, request
 import os, json, time, requests, re, threading, sys
 
-# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
-BOT_TOKEN     = os.environ.get("ADMIN_BOT_TOKEN", "")
-ADMIN_ID  = os.environ.get("ADMIN_ID", "")
-YANDEX_KEY    = os.environ.get("YANDEX_API_KEY", "")
-YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID", "")
-BASE_URL      = os.environ.get("BASE_URL", "")
+# ── ЧИТАЕМ ПЕРЕМЕННЫЕ ──────────────────────────────────────────
+BOT_TOKEN  = os.environ.get("ADMIN_BOT_TOKEN", "")
+ADMIN_ID   = os.environ.get("ADMIN_ID", "")
+YANDEX_KEY = os.environ.get("YANDEX_API_KEY", "")
+YANDEX_FID = os.environ.get("YANDEX_FOLDER_ID", "")
+BASE_URL   = os.environ.get("BASE_URL", "")
 
-# --- ПРОВЕРКА ---
-errors = []
-if not BOT_TOKEN:     errors.append("ADMIN_BOT_TOKEN")
-if not ADMIN_ID_STR:  errors.append("ADMIN_ID")
-if not YANDEX_KEY:    errors.append("YANDEX_API_KEY")
-if not YANDEX_FOLDER: errors.append("YANDEX_FOLDER_ID")
-if not BASE_URL:      errors.append("BASE_URL")
+# ── ПРОВЕРКА ───────────────────────────────────────────────────
+missing = []
+if not BOT_TOKEN:  missing.append("ADMIN_BOT_TOKEN")
+if not ADMIN_ID:   missing.append("ADMIN_ID")
+if not YANDEX_KEY: missing.append("YANDEX_API_KEY")
+if not YANDEX_FID: missing.append("YANDEX_FOLDER_ID")
+if not BASE_URL:   missing.append("BASE_URL")
 
-if errors:
-    print("ОШИБКА: Не заданы переменные: " + ", ".join(errors))
+if missing:
+    print("НЕТ ПЕРЕМЕННЫХ: " + ", ".join(missing))
     sys.exit(1)
 
-ADMIN_ID = int(ADMIN_ID_STR)
+ADMIN_ID = int(ADMIN_ID)
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
+# ── ИНИЦИАЛИЗАЦИЯ ──────────────────────────────────────────────
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# --- БАЗА ДАННЫХ ---
+# ── БАЗА ДАННЫХ ────────────────────────────────────────────────
 DATA_FILE = "db.json"
 _lock = threading.Lock()
 
@@ -53,9 +53,10 @@ _raw     = load_data()
 products = _raw.get("products", {})
 crm      = _raw.get("crm", {})
 
-# --- СОСТОЯНИЕ ---
-user_state        = {}
-follow_up_events  = {}
+# ── СОСТОЯНИЕ ──────────────────────────────────────────────────
+user_state       = {}
+follow_up_events = {}
+ADMIN_STEPS      = {"add_name", "add_price", "add_stock", "delete_name", "broadcast_text"}
 
 def get_step(chat_id):
     return user_state.get(chat_id, {}).get("step")
@@ -66,9 +67,7 @@ def clear_state(chat_id):
 def is_admin(msg):
     return msg.chat.id == ADMIN_ID
 
-ADMIN_STEPS = {"add_name", "add_price", "add_stock", "delete_name", "broadcast_text"}
-
-# --- FOLLOW-UP ---
+# ── FOLLOW-UP ──────────────────────────────────────────────────
 def cancel_follow_up(chat_id):
     ev = follow_up_events.get(chat_id)
     if ev:
@@ -84,7 +83,7 @@ def _follow_up_worker(chat_id, stop_ev):
     msgs = [
         (3 * 60,  "Остались вопросы? Готов помочь с выбором"),
         (7 * 60,  "Есть варианты под ваш запрос. Показать?"),
-        (15 * 60, "Последнее сообщение на сегодня — есть выгодное предложение. Напишите да!"),
+        (15 * 60, "Последнее сообщение — есть выгодное предложение. Напишите да!"),
     ]
     for delay, text in msgs:
         if stop_ev.wait(timeout=delay):
@@ -94,7 +93,7 @@ def _follow_up_worker(chat_id, stop_ev):
         except Exception:
             return
 
-# --- YANDEX GPT ---
+# ── YANDEX GPT ─────────────────────────────────────────────────
 def ask_ai(chat_id, user_text):
     url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
@@ -106,15 +105,12 @@ def ask_ai(chat_id, user_text):
             catalog += f"- {p['name']}: {p['price']} руб. ({avail})\n"
 
     system = (
-        "Ты — профессиональный менеджер по продажам.\n"
-        "Задачи: выяснить потребность, предложить товар из каталога, подтолкнуть к покупке.\n"
-        "Правила: коротко (2-4 предложения), по-человечески, не выдумывай товары.\n"
-        "Если клиент готов — предложи написать «оформить».\n\n"
-        "В КОНЦЕ ответа добавь ТОЛЬКО одну строку:\n"
+        "Ты — менеджер по продажам. Коротко (2-4 предложения), по-человечески.\n"
+        "Не выдумывай товары. Если готов купить — предложи написать «оформить».\n"
+        "В конце добавь одну строку:\n"
         "[STATUS:HOT] — готов купить\n"
         "[STATUS:WARM] — интересуется\n"
-        "[STATUS:COLD] — просто смотрит\n"
-        + catalog
+        "[STATUS:COLD] — просто смотрит\n" + catalog
     )
 
     uid = str(chat_id)
@@ -125,14 +121,16 @@ def ask_ai(chat_id, user_text):
 
     messages = [{"role": "system", "text": system}] + history + [{"role": "user", "text": user_text}]
 
-    headers = {"Authorization": f"Api-Key {YANDEX_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "modelUri": f"gpt://{YANDEX_FOLDER}/yandexgpt-lite",
-        "completionOptions": {"temperature": 0.65, "maxTokens": 350},
-        "messages": messages
-    }
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=20)
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Api-Key {YANDEX_KEY}", "Content-Type": "application/json"},
+        json={
+            "modelUri": f"gpt://{YANDEX_FID}/yandexgpt-lite",
+            "completionOptions": {"temperature": 0.65, "maxTokens": 350},
+            "messages": messages
+        },
+        timeout=20
+    )
     resp.raise_for_status()
     raw = resp.json()["result"]["alternatives"][0]["message"]["text"]
 
@@ -144,7 +142,7 @@ def ask_ai(chat_id, user_text):
     clean = re.sub(r"\[STATUS:.*?\]", "", raw, flags=re.IGNORECASE).strip()
     return clean, status
 
-# --- CRM ---
+# ── CRM ────────────────────────────────────────────────────────
 RANK  = {"hot": 2, "warm": 1, "cold": 0}
 LABEL = {"hot": "Горячий", "warm": "Теплый", "cold": "Холодный"}
 
@@ -159,7 +157,7 @@ def save_lead(msg, status, ai_reply=None):
     if RANK.get(status, 0) > RANK.get(crm[uid].get("status", "cold"), 0):
         crm[uid]["status"] = status
 
-    crm[uid]["history"].append({"role": "user",      "text": msg.text[:500],    "ts": int(time.time())})
+    crm[uid]["history"].append({"role": "user", "text": msg.text[:500], "ts": int(time.time())})
     if ai_reply:
         crm[uid]["history"].append({"role": "assistant", "text": ai_reply[:500], "ts": int(time.time())})
     save_data()
@@ -174,7 +172,7 @@ def notify_hot(msg):
     except Exception as e:
         print("Ошибка уведомления:", e)
 
-# --- КЛАВИАТУРЫ ---
+# ── КЛАВИАТУРЫ ─────────────────────────────────────────────────
 def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add("Каталог", "Написать менеджеру", "Помощь", "Контакты")
@@ -190,15 +188,13 @@ def cancel_kb():
     kb.add("Отмена")
     return kb
 
-# ================================================================
-#  ХЕНДЛЕРЫ
-# ================================================================
+# ── ХЕНДЛЕРЫ ───────────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     clear_state(msg.chat.id)
     name = msg.from_user.first_name or "друг"
-    bot.send_message(msg.chat.id, f"Привет, {name}!\n\nПомогу подобрать лучшее предложение.\nВыберите действие:", reply_markup=main_menu())
+    bot.send_message(msg.chat.id, f"Привет, {name}!\nПомогу подобрать лучшее предложение.", reply_markup=main_menu())
 
 @bot.message_handler(commands=["admin"])
 def cmd_admin(msg):
@@ -213,16 +209,12 @@ def cmd_leads(msg):
     if not is_admin(msg): return
     _show_leads(msg)
 
-# --- Отмена ---
 @bot.message_handler(func=lambda m: m.text == "Отмена")
 def btn_cancel(msg):
     clear_state(msg.chat.id)
-    if is_admin(msg):
-        bot.send_message(msg.chat.id, "Отменено.", reply_markup=admin_menu())
-    else:
-        bot.send_message(msg.chat.id, "Отменено.", reply_markup=main_menu())
+    kb = admin_menu() if is_admin(msg) else main_menu()
+    bot.send_message(msg.chat.id, "Отменено.", reply_markup=kb)
 
-# --- Клиентские кнопки ---
 @bot.message_handler(func=lambda m: m.text == "Каталог")
 def btn_catalog(msg):
     clear_state(msg.chat.id)
@@ -233,8 +225,7 @@ def btn_catalog(msg):
     for p in products.values():
         avail = f"В наличии: {p['stock']} шт." if p["stock"] > 0 else "Нет в наличии"
         text += f"{p['name']}\n{p['price']} руб.\n{avail}\n\n"
-    text += "Напишите название товара — расскажу подробнее"
-    bot.send_message(msg.chat.id, text)
+    bot.send_message(msg.chat.id, text + "Напишите название — расскажу подробнее")
 
 @bot.message_handler(func=lambda m: m.text == "Написать менеджеру")
 def btn_write(msg):
@@ -244,19 +235,19 @@ def btn_write(msg):
 @bot.message_handler(func=lambda m: m.text == "Помощь")
 def btn_help(msg):
     clear_state(msg.chat.id)
-    bot.send_message(msg.chat.id, "Просто напишите:\n- Что вас интересует\n- Бюджет\n- Для каких задач\n\nПодберу лучший вариант!")
+    bot.send_message(msg.chat.id, "Напишите:\n- Что интересует\n- Бюджет\n- Для каких задач\n\nПодберу лучший вариант!")
 
 @bot.message_handler(func=lambda m: m.text == "Контакты")
 def btn_contacts(msg):
     clear_state(msg.chat.id)
-    bot.send_message(msg.chat.id, "Менеджер: @ВАШ_ЮЗЕРНЕЙМ\nРабочее время: 9:00 - 21:00\n\nИли напишите сюда — отвечу быстро!")
+    bot.send_message(msg.chat.id, "Менеджер: @ВАШ_ЮЗЕРНЕЙМ\nВремя: 9:00-21:00\n\nИли напишите сюда!")
 
 @bot.message_handler(func=lambda m: m.text == "Главное меню")
 def btn_home(msg):
     clear_state(msg.chat.id)
     bot.send_message(msg.chat.id, "Главное меню:", reply_markup=main_menu())
 
-# --- Добавить товар ---
+# Добавить товар
 @bot.message_handler(func=lambda m: m.text == "Добавить товар")
 def btn_add(msg):
     if not is_admin(msg): return
@@ -268,7 +259,7 @@ def step_add_name(msg):
     if msg.text == "Отмена": return
     user_state[msg.chat.id]["name"] = msg.text.strip()
     user_state[msg.chat.id]["step"] = "add_price"
-    bot.send_message(msg.chat.id, "Введите цену (число, например 1500):", reply_markup=cancel_kb())
+    bot.send_message(msg.chat.id, "Введите цену (например 1500):", reply_markup=cancel_kb())
 
 @bot.message_handler(func=lambda m: get_step(m.chat.id) == "add_price")
 def step_add_price(msg):
@@ -292,7 +283,7 @@ def step_add_stock(msg):
     except ValueError:
         bot.send_message(msg.chat.id, "Нужно целое число. Например: 10")
 
-# --- Удалить товар ---
+# Удалить товар
 @bot.message_handler(func=lambda m: m.text == "Удалить товар")
 def btn_delete(msg):
     if not is_admin(msg): return
@@ -315,7 +306,7 @@ def step_delete(msg):
     else:
         bot.send_message(msg.chat.id, "Не найден. Проверьте написание или нажмите «Отмена».")
 
-# --- Все товары ---
+# Все товары
 @bot.message_handler(func=lambda m: m.text == "Все товары")
 def btn_all_products(msg):
     if not is_admin(msg): return
@@ -325,7 +316,7 @@ def btn_all_products(msg):
     text = "Все товары:\n\n" + "\n".join(f"- {p['name']} — {p['price']} руб. | {p['stock']} шт." for p in products.values())
     bot.send_message(msg.chat.id, text)
 
-# --- Лиды ---
+# Лиды
 @bot.message_handler(func=lambda m: m.text == "Лиды")
 def btn_leads(msg):
     if not is_admin(msg): return
@@ -349,7 +340,7 @@ def _show_leads(msg):
     for i in range(0, len(text), 4000):
         bot.send_message(msg.chat.id, text[i:i+4000])
 
-# --- Рассылка ---
+# Рассылка
 @bot.message_handler(func=lambda m: m.text == "Рассылка")
 def btn_broadcast(msg):
     if not is_admin(msg): return
@@ -371,7 +362,7 @@ def step_broadcast(msg):
             failed += 1
     bot.send_message(msg.chat.id, f"Готово! Отправлено: {sent}, ошибок: {failed}", reply_markup=admin_menu())
 
-# --- AI-продавец ---
+# AI-продавец
 @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/"))
 def ai_seller(msg):
     if get_step(msg.chat.id) in ADMIN_STEPS:
@@ -382,7 +373,7 @@ def ai_seller(msg):
 
     for key, item in products.items():
         if key in text_lower:
-            avail = f"В наличии: {item['stock']} шт." if item["stock"] > 0 else "Нет в наличии, но могу записать в список ожидания"
+            avail = f"В наличии: {item['stock']} шт." if item["stock"] > 0 else "Сейчас нет, но могу записать в список ожидания"
             reply = f"{item['name']} — {item['price']} руб.\n{avail}\n\nОформляем? Напишите «оформить» или задайте вопрос"
             save_lead(msg, "warm", reply)
             bot.send_message(msg.chat.id, reply)
@@ -410,9 +401,7 @@ def ai_seller(msg):
 
     start_follow_up(msg.chat.id)
 
-# ================================================================
-#  WEBHOOK И ЗАПУСК
-# ================================================================
+# ── WEBHOOK ────────────────────────────────────────────────────
 
 @app.route("/webhook", methods=["POST"])
 def webhook_handler():
