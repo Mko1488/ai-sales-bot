@@ -10,7 +10,7 @@ import os, json, time, requests, re, threading
 # ================================================================
 #  КОНФИГУРАЦИЯ — переменные окружения Railway
 # ================================================================
-TOKEN         = os.environ.get("ADMIN_BOT_TOKEN")
+ADMIN_BOT_TOKEN         = os.environ.get("ADMIN_BOT_TOKEN")
 ADMIN_ID      = int(os.environ.get("ADMIN_ID", "0"))
 YANDEX_KEY    = os.environ.get("YANDEX_API_KEY")
 YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID")
