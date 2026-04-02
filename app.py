@@ -4,7 +4,7 @@ from flask import Flask, request
 import os, json, time, requests, re, threading, sys
 
 # --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
-ADMIN_BOT_TOKEN     = os.environ.get("ADMIN_BOT_TOKEN", "")
+BOT_TOKEN     = os.environ.get("ADMIN_BOT_TOKEN", "")
 ADMIN_ID  = os.environ.get("ADMIN_ID", "")
 YANDEX_KEY    = os.environ.get("YANDEX_API_KEY", "")
 YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID", "")
