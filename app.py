@@ -16,6 +16,19 @@ app = Flask(__name__)
 bots = {}
 owners = {}
 
+BOTS_FILE = "bots.json"
+
+# ================= FILE STORAGE =================
+def load_bots():
+    if os.path.exists(BOTS_FILE):
+        with open(BOTS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_bots(data):
+    with open(BOTS_FILE, "w") as f:
+        json.dump(data, f)
+
 # ================= GOOGLE =================
 def save_to_sheet(user_id, name, username, status, message):
     if not GOOGLE_SHEET_URL:
@@ -31,10 +44,14 @@ def save_to_sheet(user_id, name, username, status, message):
     except:
         pass
 
-# ================= СОЗДАНИЕ БОТА =================
+# ================= CREATE BOT =================
 def create_bot(token, owner_id):
 
+    if token in bots:
+        return
+
     bot = telebot.TeleBot(token)
+    print("INIT BOT:", token)
 
     DATA_FILE = f"db_{token[:8]}.json"
     lock = threading.Lock()
@@ -79,11 +96,12 @@ def create_bot(token, owner_id):
                 status = "hot"
 
             return answer, status
-        except:
+        except Exception as e:
+            print("AI ERROR:", e)
             return "Напиши подробнее 👇", "cold"
 
     # ================= CRM =================
-    def save_lead(msg, status, answer=None):
+    def save_lead(msg, status):
         uid = str(msg.chat.id)
         name = msg.from_user.first_name or ""
         username = msg.from_user.username or ""
@@ -99,7 +117,10 @@ def create_bot(token, owner_id):
         save_to_sheet(uid, name, username, status, msg.text)
 
         if status == "hot":
-            bot.send_message(owner_id, f"🔥 ЛИД\n{name}\n@{username}\n{msg.text}")
+            try:
+                bot.send_message(owner_id, f"🔥 ЛИД\n{name}\n@{username}\n{msg.text}")
+            except:
+                pass
 
     # ================= FOLLOW-UP =================
     def follow(chat_id):
@@ -115,12 +136,12 @@ def create_bot(token, owner_id):
             if follow_flags.get(chat_id):
                 bot.send_message(chat_id, "Есть выгодное предложение 🔥")
 
-        threading.Thread(target=worker).start()
+        threading.Thread(target=worker, daemon=True).start()
 
     def cancel_follow(chat_id):
         follow_flags[chat_id] = False
 
-    # ================= КНОПКИ =================
+    # ================= UI =================
     def main_menu(msg):
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("📦 Каталог", "💬 Написать менеджеру")
@@ -128,20 +149,17 @@ def create_bot(token, owner_id):
             kb.add("📊 Лиды", "📢 Рассылка")
         return kb
 
-    # ================= START =================
+    # ================= HANDLERS =================
     @bot.message_handler(commands=["start"])
     def start(msg):
         bot.send_message(msg.chat.id, "Привет 👋", reply_markup=main_menu(msg))
 
-    # ================= КНОПКИ =================
     @bot.message_handler(func=lambda m: m.text == "📦 Каталог")
     def catalog(msg):
         if not products:
             bot.send_message(msg.chat.id, "Каталог пуст")
             return
-        text = ""
-        for p in products.values():
-            text += f"{p['name']} — {p['price']}\n"
+        text = "\n".join([f"{p['name']} — {p['price']}" for p in products.values()])
         bot.send_message(msg.chat.id, text)
 
     @bot.message_handler(func=lambda m: m.text == "📊 Лиды")
@@ -162,13 +180,13 @@ def create_bot(token, owner_id):
     def broadcast_send(msg):
         for uid in crm:
             try:
-                bot.send_message(uid, msg.text)
+                bot.send_message(int(uid), msg.text)
             except:
                 pass
         user_state[msg.chat.id] = None
         bot.send_message(msg.chat.id, "Готово")
 
-    # ================= ОСНОВНОЙ AI =================
+    # ================= AI =================
     @bot.message_handler(func=lambda m: True)
     def all(msg):
 
@@ -190,10 +208,15 @@ def create_bot(token, owner_id):
     bots[token] = bot
     owners[token] = owner_id
 
+    # сохраняем бота
+    data = load_bots()
+    data[token] = owner_id
+    save_bots(data)
+
     bot.remove_webhook()
     bot.set_webhook(url=f"{BASE_URL}/bot/{token}")
 
-# ================= ADMIN =================
+# ================= ADMIN BOT =================
 admin_bot = telebot.TeleBot(ADMIN_TOKEN)
 
 @admin_bot.message_handler(commands=["start"])
@@ -210,26 +233,43 @@ def connect(msg):
         create_bot(token, msg.chat.id)
 
         admin_bot.send_message(msg.chat.id, f"✅ @{me.username} подключен")
-    except:
+    except Exception as e:
+        print("CONNECT ERROR:", e)
         admin_bot.send_message(msg.chat.id, "❌ Ошибка токена")
 
 # ================= WEBHOOK =================
 @app.route("/bot/<token>", methods=["POST"])
 def webhook(token):
+    print("WEBHOOK HIT:", token)
+
     if token not in bots:
-        return "no bot"
+        print("BOT NOT FOUND, RELOADING...")
+        saved = load_bots()
+        if token in saved:
+            create_bot(token, saved[token])
+        else:
+            return "no bot"
+
     update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
     bots[token].process_new_updates([update])
+
     return "ok"
 
 @app.route("/")
 def home():
-    return "FULL GOD SaaS OK"
+    return "SaaS GOD MODE ON"
 
 # ================= START =================
 if __name__ == "__main__":
-    admin_bot.remove_webhook()
-    admin_bot.set_webhook(url=f"{BASE_URL}/bot/{ADMIN_TOKEN}")
+
+    # загружаем всех ботов при старте
+    saved = load_bots()
+    for token, owner_id in saved.items():
+        print("RELOAD BOT:", token)
+        create_bot(token, owner_id)
+
+    # админ бот
+    create_bot(ADMIN_TOKEN, ADMIN_ID)
 
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
