@@ -1,256 +1,192 @@
 import telebot
 from telebot import types
 from flask import Flask, request
-import os, json, time, requests, re, threading
+import os, json, time, requests, re, threading, sys
 
-# ================= SAFE ENV =================
-def get_env(name, default=None, required=False):
-    val = os.environ.get(name, default)
-    if required and not val:
-        print(f"❌ ENV MISSING: {name}")
-    else:
-        print(f"✅ ENV {name}: OK")
-    return val
+# ── ENV ─────────────────────────────────────────────
+BOT_TOKEN  = os.environ.get("ADMIN_BOT_TOKEN")
+ADMIN_ID   = os.environ.get("ADMIN_ID")
+BASE_URL   = os.environ.get("BASE_URL")
+YANDEX_KEY = os.environ.get("YANDEX_API_KEY")
+YANDEX_FID = os.environ.get("YANDEX_FOLDER_ID")
+GOOGLE_SHEET_URL = os.environ.get("GOOGLE_SHEET_URL")
 
-BOT_TOKEN = get_env("ADMIN_BOT_TOKEN", required=True)
-ADMIN_ID_RAW = get_env("ADMIN_ID", required=True)
-YANDEX_KEY = get_env("YANDEX_API_KEY", required=True)
-YANDEX_FOLDER = get_env("YANDEX_FOLDER_ID", required=True)
-BASE_URL = get_env("BASE_URL", required=True)
+if not BOT_TOKEN or not ADMIN_ID or not BASE_URL:
+    print("❌ Проверь ENV переменные")
+    sys.exit()
 
-try:
-    SUPER_ADMIN = int(ADMIN_ID_RAW)
-except:
-    print("❌ ADMIN_ID НЕ ЧИСЛО")
-    SUPER_ADMIN = 0
+ADMIN_ID = int(ADMIN_ID)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# ================= DATABASE =================
-FILE = "saas_db.json"
-lock = threading.Lock()
+# ── DB ─────────────────────────────────────────────
+DATA_FILE = "db.json"
+_lock = threading.Lock()
 
-def load():
-    if os.path.exists(FILE):
-        return json.load(open(FILE))
-    return {"clients": {}}
+def load_data():
+    if os.path.exists(DATA_FILE):
+        return json.load(open(DATA_FILE, "r", encoding="utf-8"))
+    return {"products": {}, "crm": {}}
 
-def save():
-    with lock:
-        json.dump(db, open(FILE, "w"), indent=2)
+def save_data():
+    with _lock:
+        json.dump({"products": products, "crm": crm}, open(DATA_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
-db = load()
-clients = db["clients"]
+data = load_data()
+products = data["products"]
+crm = data["crm"]
 
-# ==========  ======= GLOBAL =====  v============
 user_state = {}
-follow_events = {}
-last_notify = {}
 
-BUTTONS = {
-    "Каталог","Помощь","Товары","Лиды",
-    "Добавить товар","Удалить товар",
-    "Рассылка","Главное меню","Отмена"
-}
-
-# ================= CLIENT SYSTEM =================
-def create_client(owner_id):
-    cid = str(owner_id)
-    clients[cid] = {
-        "owner_id": owner_id,
-        "products": {},
-        "crm": {},
-        "subscription_until": time.time() + 7*86400
-    }
-    save()
-    return cid
-
-def get_client(user_id):
-    for cid, c in clients.items():
-        if user_id == c["owner_id"]:
-            return cid, c
-        if str(user_id) in c["crm"]:
-            return cid, c
-    return None, None
-
-def check_sub(client):
-    return time.time() < client["subscription_until"]
-
-# ================= MEMORY =================
-def build_memory(client, uid):
-    history = client["crm"].get(uid, {}).get("history", [])[-6:]
-    return "\n".join([f"Клиент: {h['user']} Бот: {h['bot']}" for h in history])
-
-# ================= AI =================
-def ask_ai(client, uid, text):
-    memory = build_memory(client, uid)
-    catalog = "\n".join([f"- {p['name']} ({p['price']})" for p in client["products"].values()])
-
-    system = f"""
-Ты топовый продавец.
-
-ПАМЯТЬ:
-{memory}
-
-КАТАЛОГ:
-{catalog}
-
-Отвечай кратко и продавай.
-
-[STATUS:HOT/WARM/COLD]
-"""
-
-    r = requests.post(
-        "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-        headers={"Authorization": f"Api-Key {YANDEX_KEY}"},
-        json={
-            "modelUri": f"gpt://{YANDEX_FOLDER}/yandexgpt-lite",
-            "messages": [
-                {"role": "system", "text": system},
-                {"role": "user", "text": text}
-            ]
-        },
-        timeout=20
-    )
-
-    raw = r.json()["result"]["alternatives"][0]["message"]["text"]
-
-    status = "cold"
-    if "HOT" in raw: status = "hot"
-    elif "WARM" in raw: status = "warm"
-
-    clean = re.sub(r"\[.*?\]", "", raw).strip()
-    return clean, status
-
-# ================= CRM =================
-def save_lead(client, msg, status, reply):
-    uid = str(msg.chat.id)
-
-    if uid not in client["crm"]:
-        client["crm"][uid] = {
+# ── GOOGLE SHEETS ──────────────────────────────────
+def save_to_sheet(user_id, name, username, status, message):
+    if not GOOGLE_SHEET_URL:
+        return
+    try:
+        requests.post(GOOGLE_SHEET_URL, json={
+            "user_id": user_id,
+            "name": name,
+            "username": username,
             "status": status,
-            "history": [],
-            "last_time": time.time()
-        }
+            "message": message
+        }, timeout=5)
+    except:
+        pass
 
-    client["crm"][uid]["status"] = status
-    client["crm"][uid]["history"].append({
-        "user": msg.text[:500],
-        "bot": reply[:500]
-    })
-    client["crm"][uid]["last_time"] = time.time()
-
-    save()
-
-# ================= NOTIFY =================
-def notify_owner(client, msg, status):
-    owner = client["owner_id"]
-
-    if msg.chat.id == owner:
-        return
-
+# ── CRM ────────────────────────────────────────────
+def save_lead(msg, status):
     uid = str(msg.chat.id)
-    now = time.time()
+    name = msg.from_user.first_name or "Без имени"
+    uname = msg.from_user.username or ""
 
-    if uid in last_notify and now - last_notify[uid] < 300:
-        return
+    crm[uid] = {
+        "name": name,
+        "username": uname,
+        "status": status,
+        "last": msg.text
+    }
 
-    last_notify[uid] = now
+    save_data()
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton(
-        "💬 Ответить",
-        url=f"tg://user?id={msg.chat.id}"
-    ))
+    # 🔥 В Google Sheets
+    save_to_sheet(uid, name, uname, status, msg.text)
 
+def notify_admin(msg):
     bot.send_message(
-        owner,
-        f"{status.upper()} ЛИД\n{msg.text}",
-        reply_markup=kb
+        ADMIN_ID,
+        f"🔥 ГОРЯЧИЙ ЛИД\n\n"
+        f"{msg.from_user.first_name}\n"
+        f"@{msg.from_user.username}\n"
+        f"{msg.text}\n\n"
+        f"tg://user?id={msg.chat.id}"
     )
 
-# ================= FOLLOW UP =================
-def start_follow(client, uid):
-    if uid in follow_events:
-        follow_events[uid].set()
-
-    ev = threading.Event()
-    follow_events[uid] = ev
-
-    def worker():
-        steps = [
-            (120, "Есть вопросы? Помогу 👍"),
-            (300, "Есть лучший вариант 🔥"),
-            (600, "Последнее предложение")
-        ]
-        for delay, text in steps:
-            if ev.wait(delay):
-                return
-            try:
-                bot.send_message(int(uid), text)
-            except:
-                return
-
-    threading.Thread(target=worker, daemon=True).start()
-
-# ================= UI =================
-def owner_kb():
+# ── UI ─────────────────────────────────────────────
+def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("Товары","Лиды","Добавить товар","Удалить товар","Рассылка")
+    kb.add("Каталог", "Помощь", "Контакты")
     return kb
 
-def client_kb():
+def admin_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("Каталог","Помощь")
+    kb.add("Добавить товар", "Лиды", "Рассылка")
     return kb
 
-# ================= START =================
+# ── START ──────────────────────────────────────────
 @bot.message_handler(commands=["start"])
 def start(msg):
-    user_state.pop(msg.chat.id, None)
-
-    if msg.chat.id == SUPER_ADMIN:
-        bot.send_message(msg.chat.id, "Ты супер-админ\n/create_client")
-        return
-
-    cid, client = get_client(msg.chat.id)
-
-    if not client:
-        bot.send_message(msg.chat.id, "Нет доступа")
-        return
-
-    if msg.chat.id == client["owner_id"]:
-        bot.send_message(msg.chat.id, "Панель", reply_markup=owner_kb())
+    if msg.chat.id == ADMIN_ID:
+        bot.send_message(msg.chat.id, "👑 Админ панель", reply_markup=admin_menu())
     else:
-        bot.send_message(msg.chat.id, "Напиши что ищешь 👇", reply_markup=client_kb())
+        bot.send_message(msg.chat.id, "Привет! Напиши что ищешь", reply_markup=main_menu())
 
-# ================= AI =================
-@bot.message_handler(func=lambda m: m.text and m.text not in BUTTONS)
+# ── КНОПКИ ─────────────────────────────────────────
+@bot.message_handler(func=lambda m: m.text == "Каталог")
+def catalog(msg):
+    if not products:
+        bot.send_message(msg.chat.id, "Каталог пуст")
+        return
+
+    text = "📦 Товары:\n\n"
+    for p in products.values():
+        text += f"{p['name']} — {p['price']} руб\n"
+    bot.send_message(msg.chat.id, text)
+
+@bot.message_handler(func=lambda m: m.text == "Помощь")
+def help_cmd(msg):
+    bot.send_message(msg.chat.id, "Напиши что тебе нужно — подберу вариант")
+
+@bot.message_handler(func=lambda m: m.text == "Контакты")
+def contacts(msg):
+    bot.send_message(msg.chat.id, "Менеджер: @your_username")
+
+# ── ADMIN ──────────────────────────────────────────
+@bot.message_handler(func=lambda m: m.text == "Добавить товар" and m.chat.id == ADMIN_ID)
+def add_product(msg):
+    user_state[msg.chat.id] = {"step": "name"}
+    bot.send_message(msg.chat.id, "Название товара?")
+
+@bot.message_handler(func=lambda m: user_state.get(m.chat.id, {}).get("step") == "name")
+def add_name(msg):
+    user_state[msg.chat.id]["name"] = msg.text
+    user_state[msg.chat.id]["step"] = "price"
+    bot.send_message(msg.chat.id, "Цена?")
+
+@bot.message_handler(func=lambda m: user_state.get(m.chat.id, {}).get("step") == "price")
+def add_price(msg):
+    products[msg.text.lower()] = {
+        "name": user_state[msg.chat.id]["name"],
+        "price": msg.text
+    }
+    user_state.pop(msg.chat.id)
+    save_data()
+    bot.send_message(msg.chat.id, "✅ Добавлено")
+
+@bot.message_handler(func=lambda m: m.text == "Лиды" and m.chat.id == ADMIN_ID)
+def leads(msg):
+    if not crm:
+        bot.send_message(msg.chat.id, "Лидов нет")
+        return
+
+    text = "📊 Лиды:\n\n"
+    for uid, d in crm.items():
+        text += f"{d['name']} (@{d['username']})\n{d['status']}\n\n"
+    bot.send_message(msg.chat.id, text)
+
+@bot.message_handler(func=lambda m: m.text == "Рассылка" and m.chat.id == ADMIN_ID)
+def broadcast(msg):
+    user_state[msg.chat.id] = {"step": "broadcast"}
+    bot.send_message(msg.chat.id, "Текст рассылки?")
+
+@bot.message_handler(func=lambda m: user_state.get(m.chat.id, {}).get("step") == "broadcast")
+def do_broadcast(msg):
+    for uid in crm:
+        try:
+            bot.send_message(uid, msg.text)
+        except:
+            pass
+    user_state.pop(msg.chat.id)
+    bot.send_message(msg.chat.id, "✅ Отправлено")
+
+# ── AI ЛОГИКА ──────────────────────────────────────
+@bot.message_handler(func=lambda m: True)
 def ai(msg):
-    cid, client = get_client(msg.chat.id)
-
-    if not client:
+    if msg.chat.id == ADMIN_ID:
         return
 
-    if not check_sub(client):
-        bot.send_message(msg.chat.id, "Подписка истекла")
+    text = msg.text.lower()
+
+    if any(x in text for x in ["купить", "заказать", "беру"]):
+        save_lead(msg, "hot")
+        notify_admin(msg)
+        bot.send_message(msg.chat.id, "🔥 Отлично! Менеджер скоро напишет")
         return
 
-    if msg.chat.id == client["owner_id"]:
-        return
+    save_lead(msg, "warm")
+    bot.send_message(msg.chat.id, "Понял, подбираю вариант...")
 
-    ans, status = ask_ai(client, str(msg.chat.id), msg.text)
-
-    save_lead(client, msg, status, ans)
-    bot.send_message(msg.chat.id, ans)
-
-    if status in ["hot","warm"]:
-        notify_owner(client, msg, status)
-
-    start_follow(client, str(msg.chat.id))
-
-# ================= WEBHOOK =================
+# ── WEBHOOK ────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
